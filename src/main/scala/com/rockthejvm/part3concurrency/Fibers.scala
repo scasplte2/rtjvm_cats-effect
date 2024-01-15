@@ -61,6 +61,7 @@ object Fibers extends IOApp.Simple {
 
   def testCancel() = {
     val task = IO("Starting").debug >> IO.sleep(1.second) >> IO("done").debug
+    // onCancel is a "finalizer", allowing you to free up resources in case the fiber is cancelled
     val taskWithCancellationHandler = task.onCancel(IO("I'm being canceled").debug.void)
 
     for {
