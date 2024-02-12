@@ -1,9 +1,9 @@
 package com.rockthejvm.part4coordination
 
-import cats.effect.{Deferred, IO, IOApp, Ref}
+import cats.effect.{Deferred, Fiber, IO, IOApp, Ref, Outcome}
 
-import scala.concurrent.duration._
-import cats.syntax.traverse._
+import scala.concurrent.duration.*
+import cats.syntax.traverse.*
 
 object Defers extends IOApp.Simple {
 
@@ -103,6 +103,72 @@ object Defers extends IOApp.Simple {
     } yield ()
   }
 
-  override def run = fileNotifierWithDeferred()
+  /**
+   * Exercises
+   * - write an alarm notification with two simultaneous IOs
+   *   - one that increments a counter ever second (a clock)
+   *   - one that waits for the couter to become 10, then prints a message "time's up"
+   *
+   * - implement racePair with Deferred
+   *   - use a deferred which can hold an Either[outcome for ioa, outcome for iob]
+   *   - start two fibers, one for each IO
+   *   - on completion (with any status), each IO needs to complete that Deferred
+   *     (hint: use a finalizer from the Resources lesson)
+   *     (hint 2: use a guarantee call to make sure the fibers complete the Deferred)
+   *   - what do you do in the case of cancellation (the hardest part)?
+   */
+
+  // deferred is practically useful in a dual environment (client-server, p2p, etc)
+  def tenSecondAlarm(): IO[Unit] = {
+    def notify(signal: Deferred[IO, Unit]): IO[Unit] = for {
+      _ <- IO(s"[alarm] timer started...").debug
+      _ <- signal.get
+      _ <- IO("[alarm] Time's Up!").debug
+    } yield ()
+
+    def tickingClock(tickRef: Ref[IO, Int], signal: Deferred[IO, Unit]): IO[Unit] = for {
+      _ <- IO.sleep(1.second)
+      tick <- tickRef.updateAndGet(_ + 1)
+      _ <- IO(s"[clock] tick: $tick").debug
+      _ <- if (tick >= 10) signal.complete(()) else tickingClock(tickRef, signal)
+    } yield ()
+
+    for {
+      tickRef <- Ref[IO].of(0)
+      signal <- Deferred[IO, Unit]
+      notifier <- notify(signal).start
+      clock <- tickingClock(tickRef, signal).start
+      _ <- notifier.join
+      _ <- clock.join
+    } yield ()
+  }
+
+  type RaceResult[A, B] = Either[
+    (Outcome[IO, Throwable, A], Fiber[IO, Throwable, B]),
+    (Fiber[IO, Throwable, A], Outcome[IO, Throwable, B])
+  ]
+
+  type EitherOutcome[A,B] = Either[Outcome[IO, Throwable, A], Outcome[IO, Throwable, B]]
+
+  def ourRacePair[A, B](ioa: IO[A], iob: IO[B]): IO[RaceResult[A, B]] = IO.uncancelable { poll =>
+    for {
+      signal <- Deferred[IO, EitherOutcome[A, B]]
+      fibA <- ioa.guaranteeCase(outA => signal.complete(Left(outA)).void).start
+      fibB <- iob.guaranteeCase(outB => signal.complete(Right(outB)).void).start
+      res <- poll(signal.get).onCancel { // blocking call - should be cancellable
+        for {
+          cancelFibA <- fibA.cancel.start
+          cancelFibB <- fibB.cancel.start
+          _ <- cancelFibA.join
+          _ <- cancelFibB.join
+        } yield ()
+      }
+    } yield res match {
+      case Left(outA) => Left((outA, fibB))
+      case Right(outB) => Right(fibA, outB)
+    }
+  }
+
+  override def run = ourRacePair(IO.sleep(1.second) >> IO("task 1").debug, IO.sleep(2.second) >> IO("task 2").debug).debug.void
 
 }
