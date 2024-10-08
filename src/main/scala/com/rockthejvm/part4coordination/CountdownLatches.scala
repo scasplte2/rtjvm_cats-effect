@@ -137,6 +137,11 @@ object CDLatch {
     }
   } yield cdLatch
 
+  // Daniel's version
+  sealed trait State
+  case class Live(remaining: Int) extends State
+  case object Done extends State
+
   def create_v2(count: Int): IO[CDLatch[IO]] = for {
     signal <- Deferred[IO, Unit]
     state <- Ref[IO].of[State](Live(count))
@@ -152,12 +157,5 @@ object CDLatch {
       case Live(_) => signal.get
     }
   }
-
-  // Daniel's version
-  sealed trait State
-
-  case class Live(remaining: Int) extends State
-
-  case object Done extends State
 }
 
