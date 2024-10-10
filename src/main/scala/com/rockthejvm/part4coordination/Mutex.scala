@@ -9,21 +9,21 @@ import scala.collection.immutable.Queue
 import scala.concurrent.duration.*
 import scala.util.Random
 
-abstract class Mutex {
+abstract class MyMutex {
   def acquire: IO[Unit]
   def release: IO[Unit]
 }
 
-object Mutex {
+object MyMutex {
 
   type Signal = Deferred[IO, Unit]
   val unlocked = State(locked = false, Queue())
 
   // my attempt
-  def create_v1: IO[Mutex] = for {
+  def create_v1: IO[MyMutex] = for {
     lock <- Ref[IO].of(false)
     signal <- Deferred[IO, Unit]
-    mutex = new Mutex:
+    mutex = new MyMutex:
       override def acquire = for {
         status <- lock.get
         _ <- if (status) signal.get.void else lock.set(true)
@@ -35,19 +35,19 @@ object Mutex {
       } yield ()
   } yield mutex
 
-  def create_v2: IO[Mutex] = for {
-    ref <- Ref[IO].of(Mutex.unlocked)
-    mutex = Mutex.simpleMutex(ref)
+  def create_v2: IO[MyMutex] = for {
+    ref <- Ref[IO].of(MyMutex.unlocked)
+    mutex = MyMutex.simpleMutex(ref)
   } yield mutex
 
-  def create_v3: IO[Mutex] = for {
-    ref <- Ref[IO].of(Mutex.unlocked)
-    mutex = Mutex.cancellableMutex(ref)
+  def create_v3: IO[MyMutex] = for {
+    ref <- Ref[IO].of(MyMutex.unlocked)
+    mutex = MyMutex.cancellableMutex(ref)
   } yield mutex
 
   // mutex that does not support cancellation
-  private def simpleMutex(state: Ref[IO, State]): Mutex = {
-    new Mutex {
+  private def simpleMutex(state: Ref[IO, State]): MyMutex = {
+    new MyMutex {
       override def acquire: IO[Unit] = for {
         signal <- Deferred[IO, Unit]
         _ <- state.modify {
@@ -64,8 +64,8 @@ object Mutex {
     }
   }
 
-  private def cancellableMutex(state: Ref[IO, State]): Mutex = {
-    new Mutex {
+  private def cancellableMutex(state: Ref[IO, State]): MyMutex = {
+    new MyMutex {
       override def acquire: IO[Unit] = IO.uncancelable { poll =>
 
         def cleanup(signal: Signal) = state.modify {
@@ -109,16 +109,16 @@ object Mutex {
     def criticalTask(): IO[Int] = IO.sleep(1.second) >> IO(Random.nextInt(100))
 
     def demoSimpleMutex(): IO[List[Int]] = for {
-      mutex <- Mutex.create_v2
+      mutex <- MyMutex.create_v2
       results <- (1 to 10).toList.parTraverse(id => createLockingTask(id, mutex))
     } yield results
 
     def demoLockingTasks(): IO[List[Int]] = for {
-      mutex <- Mutex.create_v1
+      mutex <- MyMutex.create_v1
       results <- (1 to 10).toList.parTraverse(id => createLockingTask(id, mutex))
     } yield results
 
-    def createLockingTask(id: Int, mutex: Mutex): IO[Int] = for {
+    def createLockingTask(id: Int, mutex: MyMutex): IO[Int] = for {
       _ <- IO(s"[task $id] waiting for permissions...").debug
       _ <- mutex.acquire // blocks if the mutex has been acquired by some other fiber
       // start critical section
@@ -130,7 +130,7 @@ object Mutex {
       _ <- IO(s"[task $id] locked removed").debug
     } yield res
 
-    def createCancellingTask(id: Int, mutex: Mutex): IO[Int] =
+    def createCancellingTask(id: Int, mutex: MyMutex): IO[Int] =
       if (id % 2 == 0) createLockingTask(id, mutex)
       else for {
         fib <- createLockingTask(id, mutex).onCancel(IO(s"[task $id] received cancellation!").debug.void).start
@@ -144,7 +144,7 @@ object Mutex {
       } yield result
 
     def demoCancellingTasks(): IO[List[Int]] = for {
-      mutex <- Mutex.create_v3
+      mutex <- MyMutex.create_v3
       results <- (1 to 10).toList.parTraverse(id => createCancellingTask(id, mutex))
     } yield results
 
