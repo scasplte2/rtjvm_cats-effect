@@ -100,7 +100,11 @@ object PolymorphicCoordination extends IOApp.Simple {
           override def acquire: F[Unit] = Concurrent[F].uncancelable { poll =>
 
             def cleanup(signal: Deferred[F, Unit]) = state.modify {
-              case State(lock, queue) => State[F](lock, queue.filterNot(_ eq signal)) -> release
+              case State(lock, queue) if queue.exists(_ eq signal) => // if thread trying to cancel is owner of lock
+                State[F](lock, queue.filterNot( _ eq signal)) -> Concurrent[F].unit
+
+              case State(lock, queue) =>
+                State[F](lock, queue.filterNot(_ eq signal)) -> release
             }.flatten
 
             for {

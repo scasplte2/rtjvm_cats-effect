@@ -4,6 +4,7 @@ import cats.effect.kernel.Outcome
 import cats.effect.{Deferred, IO, IOApp, Ref}
 import cats.syntax.parallel.*
 import com.rockthejvm.utils.*
+import sun.awt.Mutex
 
 import scala.collection.immutable.Queue
 import scala.concurrent.duration.*
@@ -69,7 +70,11 @@ object MyMutex {
       override def acquire: IO[Unit] = IO.uncancelable { poll =>
 
         def cleanup(signal: Signal) = state.modify {
-          case State(lock, queue) => State(lock, queue.filterNot( _ eq signal)) -> release
+          case State(lock, queue) if queue.exists(_ eq signal) => // if thread trying to cancel is owner of lock
+            State(lock, queue.filterNot( _ eq signal)) -> IO.unit
+
+          case State(lock, queue) =>
+            State(lock, queue.filterNot(_ eq signal)) -> release
         }.flatten
 
         for {
@@ -148,5 +153,33 @@ object MyMutex {
       results <- (1 to 10).toList.parTraverse(id => createCancellingTask(id, mutex))
     } yield results
 
-    override def run = demoCancellingTasks().debug.void
+    def demoCancelWhileBlocked() = for {
+      mutex <- MyMutex.create_v3
+      fib1 <- (
+          IO("[fib1] getting mutex").debug >>
+          mutex.acquire >>
+          IO("[fib1] got the mutex, never releasing").debug >>
+          IO.never
+        ).start
+      fib2 <- (
+          IO("[fib2] sleeping").debug >>
+          IO.sleep(1.second) >>
+          IO("[fib2] trying to get the mutex").debug >>
+          mutex.acquire.onCancel(IO("[fib2] being cancelled").debug.void) >>
+          IO("[fib2] acquired mutex").debug
+        ).start
+      fib3 <- (
+        IO("[fib3] sleeping").debug >>
+          IO.sleep(2.seconds) >>
+          IO("[fib3] trying to get the mutex").debug >>
+          mutex.acquire >>
+          IO("[fib3] acquired mutex").debug
+        ).start
+      _ <- IO.sleep(3.seconds) >> IO("Canceling fib2!").debug >> fib2.cancel
+      _ <- fib1.join
+      _ <- fib2.join
+      _ <- fib3.join
+    } yield ()
+
+    override def run = demoCancelWhileBlocked().void
   }
